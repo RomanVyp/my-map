@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Карта с координатами (исправлено)</title>
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- CodeMirror -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        #map {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        .control-panel {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(5px);
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            width: 500px;
+            padding: 20px;
+            cursor: move;
+            user-select: none;
+            border: 1px solid rgba(255,255,255,0.5);
+        }
+        .panel-header {
+            font-weight: bold;
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #0078ff;
+            cursor: move;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .panel-header span {
+            font-size: 14px;
+            color: #666;
+            font-weight: normal;
+        }
+        .CodeMirror {
+            height: 200px;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 14px;
+            margin-bottom: 15px;
+        }
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .button-group button {
+            flex: 1;
+            background: #0078ff;
+            color: white;
+            border: none;
+            padding: 12px 0;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-weight: bold;
+        }
+        .button-group button#shareBtn {
+            background: #28a745;
+        }
+        .button-group button:hover {
+            opacity: 0.9;
+        }
+        .stats {
+            font-size: 14px;
+            color: #333;
+            background: #f0f8ff;
+            padding: 8px 12px;
+            border-radius: 6px;
+            text-align: left;
+            border-left: 3px solid #0078ff;
+            margin-bottom: 5px;
+            white-space: pre-line;
+            min-height: 40px;
+        }
+        .error-list {
+            color: #cc0000;
+            font-weight: bold;
+        }
+        .note {
+            font-size: 12px;
+            color: #666;
+            margin-top: 10px;
+            text-align: center;
+        }
+        .drag-hint {
+            font-size: 12px;
+            color: #aaa;
+            text-align: right;
+            margin-top: 5px;
+        }
+        .mouse-coordinates {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-family: monospace;
+            font-size: 14px;
+            pointer-events: none;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.3);
+            backdrop-filter: blur(4px);
+        }
+        .viewer-note {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: rgba(0,0,0,0.6);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 30px;
+            font-size: 14px;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255,255,255,0.3);
+            pointer-events: none;
+        }
+        .leaflet-attribution-flag {
+            display: none !important;
+        }
+        .leaflet-control-layers {
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+        }
+        .copy-notification {
+            position: fixed;
+            bottom: 60px;
+            right: 20px;
+            background: #28a745;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            z-index: 2000;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+        .copy-notification.show {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div class="mouse-coordinates" id="mouse-coords">Широта: --, Долгота: --</div>
+    <div class="copy-notification" id="copyNotification">Ссылка скопирована!</div>
+
+    <div id="dynamic-ui"></div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+
+    <script>
+        (function() {
+            const map = L.map('map', { attributionControl: false }).setView([55.5, 37.5], 5);
+
+            // --- Сетка ---
+            function createGraticule() {
+                const lines = [];
+                for (let lat = -80; lat <= 80; lat += 10) {
+                    const points = [];
+                    for (let lng = -180; lng <= 180; lng += 5) points.push([lat, lng]);
+                    lines.push(L.polyline(points, { color: '#666', weight: 0.5, opacity: 0.3, interactive: false }));
+                }
+                for (let lng = -180; lng <= 180; lng += 10) {
+                    const points = [];
+                    for (let lat = -80; lat <= 80; lat += 5) points.push([lat, lng]);
+                    lines.push(L.polyline(points, { color: '#666', weight: 0.5, opacity: 0.3, interactive: false }));
+                }
+                return L.layerGroup(lines);
+            }
+            createGraticule().addTo(map);
+
+            // --- Координаты мыши ---
+            const mouseCoordsDiv = document.getElementById('mouse-coords');
+            map.on('mousemove', function(e) {
+                mouseCoordsDiv.innerHTML = `Широта: ${e.latlng.lat.toFixed(5)}, Долгота: ${e.latlng.lng.toFixed(5)}`;
+            });
+
+            // --- Подложки ---
+            const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap' });
+            const humanitarian = L.tileLayer('https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap, Humanitarian' });
+            const cartoDB = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap, CartoDB' });
+            const cartoDBDark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap, CartoDB' });
+            const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: '© Esri' });
+
+            osm.addTo(map);
+            L.control.layers({
+                "🗺️ OpenStreetMap": osm,
+                "🌍 Humanitarian": humanitarian,
+                "🚀 CartoDB Voyager": cartoDB,
+                "🌙 CartoDB Dark": cartoDBDark,
+                "🛰️ Esri Satellite": satellite
+            }, null, { position: 'topright', collapsed: false }).addTo(map);
+            L.control.attribution({ prefix: false }).addTo(map);
+
+            const markerLayer = L.layerGroup().addTo(map);
+            const polylineLayer = L.layerGroup().addTo(map);
+
+            // --- Функция преобразования DMS (без изменений) ---
+            function dmsToDecimal(digits, dir) {
+                const len = digits.length;
+                let deg, min, sec = 0;
+                if (dir === 'N' || dir === 'S') {
+                    if (len === 4) { deg = parseInt(digits.slice(0,2)); min = parseInt(digits.slice(2,4)); }
+                    else if (len === 6) { deg = parseInt(digits.slice(0,2)); min = parseInt(digits.slice(2,4)); sec = parseInt(digits.slice(4,6)); }
+                    else throw new Error('Bad lat length');
+                } else {
+                    if (len === 5) { deg = parseInt(digits.slice(0,3)); min = parseInt(digits.slice(3,5)); }
+                    else if (len === 7) { deg = parseInt(digits.slice(0,3)); min = parseInt(digits.slice(3,5)); sec = parseInt(digits.slice(5,7)); }
+                    else throw new Error('Bad lng length');
+                }
+                let dec = deg + min/60 + sec/3600;
+                if (dir === 'S' || dir === 'Ю' || dir === 'W' || dir === 'З') dec = -dec;
+                return dec;
+            }
+
+            // --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ПАРСЕРА (поддержка латинских C и B) ---
+            function parseCoordinatesFromLine(line) {
+                // Замена русских букв на латинские
+                const replacements = {
+                    'С':'N', 'с':'N',
+                    'Ю':'S', 'ю':'S',
+                    'В':'E', 'в':'E',
+                    'З':'W', 'з':'W'
+                };
+                let str = line.replace(/[СсЮюВвЗз]/g, m => replacements[m]);
+
+                // Дополнительная замена: латинские C и B (если использовались вместо русских)
+                str = str.replace(/C/g, 'N').replace(/c/g, 'n')
+                         .replace(/B/g, 'E').replace(/b/g, 'e');
+
+                str = str.toUpperCase();
+                str = str.replace(/\s+/g, '');
+
+                const tokenPattern = /([NSEW])?(\d{4,7})([NSEW])?/g;
+                const tokens = [];
+                let match;
+                while ((match = tokenPattern.exec(str)) !== null) {
+                    const before = match[1];
+                    const digits = match[2];
+                    const after = match[3];
+                    const dir = after || before;
+                    if (!dir) continue;
+                    tokens.push({ digits, dir });
+                }
+
+                const points = [];
+                let latToken = null;
+                for (let token of tokens) {
+                    const d = token.dir;
+                    if ((d === 'N' || d === 'S') && latToken === null) {
+                        latToken = token;
+                    } else if ((d === 'E' || d === 'W') && latToken !== null) {
+                        try {
+                            const lat = dmsToDecimal(latToken.digits, latToken.dir);
+                            const lng = dmsToDecimal(token.digits, token.dir);
+                            points.push({
+                                lat, lng,
+                                original: `${latToken.digits}${latToken.dir} ${token.digits}${token.dir}`
+                            });
+                        } catch (e) {}
+                        latToken = null;
+                    } else {
+                        latToken = null;
+                    }
+                }
+                return points;
+            }
+
+            function parseAllLines(text) {
+                const lines = text.split(/\r?\n/);
+                const allPoints = [], polylines = [];
+                for (let i = 0; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    if (!line) continue;
+                    const pts = parseCoordinatesFromLine(line);
+                    if (pts.length === 0) continue;
+                    pts.forEach(p => allPoints.push({ ...p, lineIndex: i }));
+                    if (pts.length >= 2) polylines.push(pts.map(p => [p.lat, p.lng]));
+                }
+                return { allPoints, polylines };
+            }
+
+            function displayPointsAndLines(allPoints, polylines, withPopup = true, onClick = null) {
+                markerLayer.clearLayers();
+                polylineLayer.clearLayers();
+                allPoints.forEach((p, idx) => {
+                    const m = L.marker([p.lat, p.lng]).addTo(markerLayer);
+                    if (withPopup) {
+                        let popup = `<b>Точка ${idx+1}</b><br>${p.original}`;
+                        if (p.lineIndex !== undefined) popup += `<br>Строка ${p.lineIndex+1}`;
+                        m.bindPopup(popup);
+                    }
+                    if (onClick) m.on('click', () => onClick(p));
+                });
+                polylines.forEach(latlngs => L.polyline(latlngs, { color: '#3388ff', weight: 3 }).addTo(polylineLayer));
+                if (allPoints.length) {
+                    const bounds = markerLayer.getBounds();
+                    bounds.isValid() ? map.fitBounds(bounds, { padding: [30,30] }) : map.setView([allPoints[0].lat, allPoints[0].lng], 10);
+                }
+            }
+
+            // --- Режим просмотра или редактирования ---
+            const urlParams = new URLSearchParams(window.location.search);
+            const dataParam = urlParams.get('data');
+
+            if (dataParam) {
+                // Просмотр
+                document.getElementById('dynamic-ui').innerHTML = '<div class="viewer-note">🔒 Режим просмотра (только чтение)</div>';
+                try {
+                    const decoded = decodeURIComponent(escape(atob(dataParam)));
+                    const { allPoints, polylines } = parseAllLines(decoded);
+                    displayPointsAndLines(allPoints, polylines, true, (p) => map.panTo([p.lat, p.lng]));
+                } catch (e) {
+                    console.error(e);
+                    document.getElementById('dynamic-ui').innerHTML += '<div style="position:fixed; top:80px; right:20px; background:red; color:white; padding:10px;">Ошибка загрузки</div>';
+                }
+            } else {
+                // Редактирование
+                const ui = document.getElementById('dynamic-ui');
+                ui.innerHTML = `
+                    <div class="control-panel" id="controlPanel">
+                        <div class="panel-header" id="panelHeader">
+                            🗺️ Ввод координат (зелёный = ок, красный = ошибка)
+                            <span>(перетащите)</span>
+                        </div>
+                        <textarea id="coordsInput" placeholder="Введите координаты..."></textarea>
+                        <div class="button-group">
+                            <button id="showMapBtn">Показать на карте</button>
+                            <button id="shareBtn">🔗 Скопировать ссылку</button>
+                        </div>
+                        <div class="stats" id="stats">Введите координаты и нажмите кнопку</div>
+                        <div class="note">
+                            ✅ GGMM(SS) и GGGMM(SS), буквы до/после, рус/лат, теперь с поддержкой C и B<br>
+                            ✅ Клик по маркеру → центрирование + выделение строки<br>
+                            ✅ После публикации на Netlify ссылка будет рабочей для всех
+                        </div>
+                        <div class="drag-hint">↖️ можно перетаскивать</div>
+                    </div>
+                `;
+
+                const textarea = document.getElementById('coordsInput');
+                const editor = CodeMirror.fromTextArea(textarea, {
+                    lineNumbers: true,
+                    mode: 'text/plain',
+                    theme: 'default',
+                    indentUnit: 4,
+                    autofocus: true
+                });
+
+                function analyzeText(text) {
+                    return text.split(/\r?\n/).map(line => {
+                        const trimmed = line.trim();
+                        if (!trimmed) return { valid: true, points: [] };
+                        const pts = parseCoordinatesFromLine(trimmed);
+                        return { valid: pts.length > 0, points: pts };
+                    });
+                }
+
+                function highlightLines() {
+                    const text = editor.getValue();
+                    const results = analyzeText(text);
+                    editor.getAllMarks().forEach(m => m.clear());
+                    for (let i = 0; i < results.length; i++) {
+                        const line = editor.getLine(i);
+                        if (!line.trim()) continue;
+                        editor.markText({ line: i, ch: 0 }, { line: i, ch: line.length }, {
+                            className: results[i].valid ? 'valid-line' : 'invalid-line',
+                            inclusiveLeft: true, inclusiveRight: true
+                        });
+                    }
+                }
+
+                const style = document.createElement('style');
+                style.innerHTML = `.valid-line{background-color:#d4edda!important}.invalid-line{background-color:#f8d7da!important}`;
+                document.head.appendChild(style);
+
+                let timeout;
+                editor.on('change', () => {
+                    clearTimeout(timeout);
+                    timeout = setTimeout(highlightLines, 300);
+                });
+
+                document.getElementById('showMapBtn').addEventListener('click', function() {
+                    const text = editor.getValue();
+                    const results = analyzeText(text);
+                    const errorLines = results.map((r,i) => ({ valid: r.valid, idx: i+1, text: editor.getLine(i) }))
+                        .filter(r => !r.valid && r.text.trim()).map(r => r.idx);
+                    const stats = document.getElementById('stats');
+
+                    const allPoints = [], polylines = [];
+                    for (let i = 0; i < results.length; i++) {
+                        if (!results[i].valid) continue;
+                        const line = editor.getLine(i);
+                        if (!line.trim()) continue;
+                        const pts = parseCoordinatesFromLine(line);
+                        pts.forEach(p => allPoints.push({ ...p, lineIndex: i }));
+                        if (pts.length >= 2) polylines.push(pts.map(p => [p.lat, p.lng]));
+                    }
+
+                    let msg = allPoints.length ? `✅ Точек: ${allPoints.length}, линий: ${polylines.length}` : '⚠️ Нет корректных координат.';
+                    if (errorLines.length) msg += `<br><span class="error-list">❌ Ошибка в строке(ах): ${errorLines.join(', ')}</span>`;
+                    stats.innerHTML = msg;
+
+                    if (allPoints.length) {
+                        displayPointsAndLines(allPoints, polylines, true, (p) => {
+                            map.panTo([p.lat, p.lng]);
+                            editor.setSelection({ line: p.lineIndex, ch: 0 }, { line: p.lineIndex, ch: editor.getLine(p.lineIndex).length });
+                            editor.scrollIntoView({ line: p.lineIndex, ch: 0 });
+                            editor.focus();
+                        });
+                    } else {
+                        markerLayer.clearLayers();
+                        polylineLayer.clearLayers();
+                    }
+                });
+
+                // --- Кнопка копирования ссылки ---
+                document.getElementById('shareBtn').addEventListener('click', function() {
+                    const text = editor.getValue();
+                    if (!text.trim()) {
+                        alert('Введите координаты перед созданием ссылки.');
+                        return;
+                    }
+                    // Кодирование с поддержкой Unicode
+                    const encoded = btoa(unescape(encodeURIComponent(text)));
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('data', encoded);
+                    // Копируем в буфер обмена
+                    navigator.clipboard.writeText(url.toString()).then(() => {
+                        const notif = document.getElementById('copyNotification');
+                        notif.classList.add('show');
+                        setTimeout(() => notif.classList.remove('show'), 2000);
+                    }).catch(() => {
+                        alert('Не удалось скопировать, вот ссылка:\n' + url.toString());
+                    });
+                });
+
+                // Перетаскивание панели
+                const panel = document.getElementById('controlPanel');
+                const header = document.getElementById('panelHeader');
+                let dragging = false, offsetX, offsetY;
+                header.addEventListener('mousedown', (e) => {
+                    dragging = true;
+                    offsetX = e.clientX - panel.offsetLeft;
+                    offsetY = e.clientY - panel.offsetTop;
+                    panel.style.cursor = 'grabbing';
+                });
+                document.addEventListener('mousemove', (e) => {
+                    if (!dragging) return;
+                    e.preventDefault();
+                    panel.style.left = (e.clientX - offsetX) + 'px';
+                    panel.style.top = (e.clientY - offsetY) + 'px';
+                });
+                document.addEventListener('mouseup', () => {
+                    dragging = false;
+                    panel.style.cursor = 'move';
+                });
+
+                setTimeout(highlightLines, 100);
+            }
+        })();
+    </script>
+</body>
+</html>
