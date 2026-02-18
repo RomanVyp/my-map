@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <title>Карта с координатами (исправлено)</title>
+    <title>Карта с поддержкой всех форматов</title>
     <!-- Leaflet -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <!-- CodeMirror -->
@@ -226,25 +226,33 @@
             const markerLayer = L.layerGroup().addTo(map);
             const polylineLayer = L.layerGroup().addTo(map);
 
-            // --- Функция преобразования DMS (без изменений) ---
+            // --- УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ПРЕОБРАЗОВАНИЯ DMS (поддержка 4,5,6,7 цифр) ---
             function dmsToDecimal(digits, dir) {
                 const len = digits.length;
                 let deg, min, sec = 0;
-                if (dir === 'N' || dir === 'S') {
-                    if (len === 4) { deg = parseInt(digits.slice(0,2)); min = parseInt(digits.slice(2,4)); }
-                    else if (len === 6) { deg = parseInt(digits.slice(0,2)); min = parseInt(digits.slice(2,4)); sec = parseInt(digits.slice(4,6)); }
-                    else throw new Error('Bad lat length');
+
+                // Определяем количество цифр градусов: 2, если длина 4 или 6; 3, если длина 5 или 7.
+                if (len === 4 || len === 6) {
+                    // Двузначные градусы (GGMM или GGMMSS)
+                    deg = parseInt(digits.slice(0, 2), 10);
+                    min = parseInt(digits.slice(2, 4), 10);
+                    if (len === 6) sec = parseInt(digits.slice(4, 6), 10);
+                } else if (len === 5 || len === 7) {
+                    // Трёхзначные градусы (GGGMM или GGGMMSS)
+                    deg = parseInt(digits.slice(0, 3), 10);
+                    min = parseInt(digits.slice(3, 5), 10);
+                    if (len === 7) sec = parseInt(digits.slice(5, 7), 10);
                 } else {
-                    if (len === 5) { deg = parseInt(digits.slice(0,3)); min = parseInt(digits.slice(3,5)); }
-                    else if (len === 7) { deg = parseInt(digits.slice(0,3)); min = parseInt(digits.slice(3,5)); sec = parseInt(digits.slice(5,7)); }
-                    else throw new Error('Bad lng length');
+                    throw new Error(`Неверная длина числа: ${digits}`);
                 }
-                let dec = deg + min/60 + sec/3600;
-                if (dir === 'S' || dir === 'Ю' || dir === 'W' || dir === 'З') dec = -dec;
-                return dec;
+
+                let decimal = deg + min / 60 + sec / 3600;
+                // Учитываем южное и западное полушария
+                if (dir === 'S' || dir === 'Ю' || dir === 'W' || dir === 'З') decimal = -decimal;
+                return decimal;
             }
 
-            // --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ПАРСЕРА (поддержка латинских C и B) ---
+            // --- ПАРСЕР СТРОКИ (с поддержкой латинских C и B) ---
             function parseCoordinatesFromLine(line) {
                 // Замена русских букв на латинские
                 const replacements = {
@@ -255,13 +263,16 @@
                 };
                 let str = line.replace(/[СсЮюВвЗз]/g, m => replacements[m]);
 
-                // Дополнительная замена: латинские C и B (если использовались вместо русских)
+                // Дополнительная замена: латинские C и B (большие и маленькие) на соответствующие N и E
                 str = str.replace(/C/g, 'N').replace(/c/g, 'n')
                          .replace(/B/g, 'E').replace(/b/g, 'e');
 
+                // Приводим к верхнему регистру для единообразия
                 str = str.toUpperCase();
+                // Удаляем все пробелы (чтобы легче искать токены)
                 str = str.replace(/\s+/g, '');
 
+                // Ищем все последовательности вида: (буква?)(4-7 цифр)(буква?)
                 const tokenPattern = /([NSEW])?(\d{4,7})([NSEW])?/g;
                 const tokens = [];
                 let match;
@@ -269,18 +280,21 @@
                     const before = match[1];
                     const digits = match[2];
                     const after = match[3];
-                    const dir = after || before;
-                    if (!dir) continue;
+                    const dir = after || before; // буква после числа имеет приоритет (обычно там и стоит)
+                    if (!dir) continue; // нет буквы направления – не координата
                     tokens.push({ digits, dir });
                 }
 
+                // Группируем токены в пары (широта, долгота) по порядку следования
                 const points = [];
                 let latToken = null;
                 for (let token of tokens) {
                     const d = token.dir;
                     if ((d === 'N' || d === 'S') && latToken === null) {
+                        // Запоминаем широту
                         latToken = token;
                     } else if ((d === 'E' || d === 'W') && latToken !== null) {
+                        // Есть широта и встретилась долгота – формируем точку
                         try {
                             const lat = dmsToDecimal(latToken.digits, latToken.dir);
                             const lng = dmsToDecimal(token.digits, token.dir);
@@ -288,15 +302,19 @@
                                 lat, lng,
                                 original: `${latToken.digits}${latToken.dir} ${token.digits}${token.dir}`
                             });
-                        } catch (e) {}
-                        latToken = null;
+                        } catch (e) {
+                            console.warn('Ошибка преобразования', e);
+                        }
+                        latToken = null; // сбрасываем для следующей пары
                     } else {
+                        // Неправильная последовательность – сбрасываем
                         latToken = null;
                     }
                 }
                 return points;
             }
 
+            // --- Анализ всего текста (для подсветки) ---
             function parseAllLines(text) {
                 const lines = text.split(/\r?\n/);
                 const allPoints = [], polylines = [];
@@ -311,6 +329,7 @@
                 return { allPoints, polylines };
             }
 
+            // --- Отображение точек и линий на карте ---
             function displayPointsAndLines(allPoints, polylines, withPopup = true, onClick = null) {
                 markerLayer.clearLayers();
                 polylineLayer.clearLayers();
@@ -330,12 +349,12 @@
                 }
             }
 
-            // --- Режим просмотра или редактирования ---
+            // --- Определение режима (просмотр или редактирование) ---
             const urlParams = new URLSearchParams(window.location.search);
             const dataParam = urlParams.get('data');
 
             if (dataParam) {
-                // Просмотр
+                // РЕЖИМ ПРОСМОТРА
                 document.getElementById('dynamic-ui').innerHTML = '<div class="viewer-note">🔒 Режим просмотра (только чтение)</div>';
                 try {
                     const decoded = decodeURIComponent(escape(atob(dataParam)));
@@ -346,7 +365,7 @@
                     document.getElementById('dynamic-ui').innerHTML += '<div style="position:fixed; top:80px; right:20px; background:red; color:white; padding:10px;">Ошибка загрузки</div>';
                 }
             } else {
-                // Редактирование
+                // РЕЖИМ РЕДАКТИРОВАНИЯ
                 const ui = document.getElementById('dynamic-ui');
                 ui.innerHTML = `
                     <div class="control-panel" id="controlPanel">
@@ -361,9 +380,9 @@
                         </div>
                         <div class="stats" id="stats">Введите координаты и нажмите кнопку</div>
                         <div class="note">
-                            ✅ GGMM(SS) и GGGMM(SS), буквы до/после, рус/лат, теперь с поддержкой C и B<br>
+                            ✅ GGMM(SS) и GGGMM(SS) для широты и долготы, буквы до/после, рус/лат, C/B<br>
                             ✅ Клик по маркеру → центрирование + выделение строки<br>
-                            ✅ После публикации на Netlify ссылка будет рабочей для всех
+                            ✅ После публикации на Netlify/GitHub ссылка будет рабочей для всех
                         </div>
                         <div class="drag-hint">↖️ можно перетаскивать</div>
                     </div>
@@ -378,6 +397,7 @@
                     autofocus: true
                 });
 
+                // --- Функция анализа для подсветки ---
                 function analyzeText(text) {
                     return text.split(/\r?\n/).map(line => {
                         const trimmed = line.trim();
@@ -411,6 +431,7 @@
                     timeout = setTimeout(highlightLines, 300);
                 });
 
+                // --- Обработчик кнопки "Показать на карте" ---
                 document.getElementById('showMapBtn').addEventListener('click', function() {
                     const text = editor.getValue();
                     const results = analyzeText(text);
@@ -466,7 +487,7 @@
                     });
                 });
 
-                // Перетаскивание панели
+                // --- Перетаскивание панели ---
                 const panel = document.getElementById('controlPanel');
                 const header = document.getElementById('panelHeader');
                 let dragging = false, offsetX, offsetY;
